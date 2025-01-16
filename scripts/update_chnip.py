@@ -1,69 +1,45 @@
 import netaddr
 import requests
-import logging
-import math
 
-logger = logging.getLogger(__name__)
-
-
-def update_ip():
-    url = 'https://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest'
-    timeout = 30
-    save_to_file = '/home/jerry/Documents/vps-chn/chnroute.txt'
-    save_to_file4 = '/home/jerry/Documents/vps-chn/chnroute-ipv4.txt'
-    save_to_file6 = '/home/jerry/Documents/vps-chn/chnroute-ipv6.txt'
-
-
-    logger.info(f'connecting to {url}')
-
+def parse_and_merge_ip(url):
+    print(f'Connecting to {url}...')
     ipNetwork_list = []
-    ipNetwork_list4 = []
-    ipNetwork_list6 = []
+    lines = requests.get(url).text.splitlines()
+    for line in lines:
+        if '|CN|ipv6|' in line:
+            elems = line.split('|')
+            ip_start = elems[3]
+            cidr_prefix_length = elems[4]
+            ipNetwork_list.append(netaddr.IPNetwork(f'{ip_start}/{cidr_prefix_length}'))
+    return netaddr.cidr_merge(ipNetwork_list)
 
-    with requests.get(url, timeout=timeout) as res:
-        if res.status_code != 200:
-            raise Exception(f'status code :{res.status_code}')
+def download_and_parse(url):
+    print(f'Downloading from {url}...')
+    return [netaddr.IPNetwork(line.strip()) for line in requests.get(url).text.splitlines()]
 
-        logger.info(f'parsing...')
+def merge_and_sort_networks(networks1, networks2):
+    print('Merging and sorting networks...')
+    return netaddr.cidr_merge(networks1 + networks2)
 
-        lines = res.text.splitlines()
-        for line in lines:
-            try:
-                if line.find('|CN|ipv4|') != -1:
-                    elems = line.split('|')
-                    ip_start = elems[3]
-                    count = int(elems[4])
-                    cidr_prefix_length = int(32 - math.log(count, 2))
-                    ipNetwork_list.append(netaddr.IPNetwork(f'{ip_start}/{cidr_prefix_length}\n'))
-                    ipNetwork_list4.append(netaddr.IPNetwork(f'{ip_start}/{cidr_prefix_length}\n'))
-
-                if line.find('|CN|ipv6|') != -1:
-                    elems = line.split('|')
-                    ip_start = elems[3]
-                    cidr_prefix_length = elems[4]
-                    ipNetwork_list.append(netaddr.IPNetwork(f'{ip_start}/{cidr_prefix_length}\n')) 
-                    ipNetwork_list6.append(netaddr.IPNetwork(f'{ip_start}/{cidr_prefix_length}\n'))
-            except IndexError:
-                logging.warning(f'unexpected format: {line}')
-
-    logger.info('merging')
-    ipNetwork_list = netaddr.cidr_merge(ipNetwork_list)
-    ipNetwork_list4 = netaddr.cidr_merge(ipNetwork_list4)
-    ipNetwork_list6 = netaddr.cidr_merge(ipNetwork_list6)
-    logger.info('writing to file')
-
-    with open(save_to_file, 'wt') as f:
-        f.writelines([f'{x}\n' for x in ipNetwork_list])
-
-    with open(save_to_file4, 'wt') as f:
-        f.writelines([f'{x}\n' for x in ipNetwork_list4])
-
-    with open(save_to_file6, 'wt') as f:
-        f.writelines([f'{x}\n' for x in ipNetwork_list6])
-
-    logger.info('all done')
-
+def write_to_file(networks, filename):
+    print(f'Writing to {filename}...')
+    with open(filename, 'wt') as f:
+        for network in networks:
+            f.write(str(network) + "\n")
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
-    update_ip()
+    # Parse and merge IPv6 networks
+    ipv6_networks = parse_and_merge_ip('https://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest')
+    write_to_file(ipv6_networks, './chnroute-ipv6.txt')
+
+    # Download and parse IPv4 networks
+    china_ip_list = download_and_parse("https://raw.githubusercontent.com/17mon/china_ip_list/master/china_ip_list.txt")
+    china_txt = download_and_parse("https://raw.githubusercontent.com/gaoyifan/china-operator-ip/ip-lists/china.txt")
+
+    # Merge and sort IPv4 networks
+    ipv4_networks = merge_and_sort_networks(china_ip_list, china_txt)
+    write_to_file(ipv4_networks, './chnroute-ipv4.txt')
+
+    # Merge IPv4 and IPv6 networks
+    all_networks = merge_and_sort_networks(ipv4_networks, ipv6_networks)
+    write_to_file(all_networks, './chnroute.txt')
